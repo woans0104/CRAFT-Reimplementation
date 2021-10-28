@@ -28,6 +28,8 @@ import zipfile
 from craft import CRAFT
 
 from collections import OrderedDict
+
+
 def copyStateDict(state_dict):
     if list(state_dict.keys())[0].startswith("module"):
         start_idx = 1
@@ -44,25 +46,29 @@ def str2bool(v):
 
 parser = argparse.ArgumentParser(description='CRAFT Text Detection')
 parser.add_argument('--trained_model', default='weights/craft_mlt_25k.pth', type=str, help='pretrained model')
-parser.add_argument('--text_threshold', default=0.7, type=float, help='text confidence threshold')
-parser.add_argument('--low_text', default=0.4, type=float, help='text low-bound score')
-parser.add_argument('--link_threshold', default=0.4, type=float, help='link confidence threshold')
+parser.add_argument('--text_threshold', default=0.85, type=float, help='text confidence threshold')
+parser.add_argument('--low_text', default=0.5, type=float, help='text low-bound score')
+parser.add_argument('--link_threshold', default=0.2, type=float, help='link confidence threshold')
 parser.add_argument('--cuda', default=True, type=str2bool, help='Use cuda to train model')
 parser.add_argument('--canvas_size', default=2240, type=int, help='image size for inference')
 parser.add_argument('--mag_ratio', default=2, type=float, help='image magnification ratio')
 parser.add_argument('--poly', default=False, action='store_true', help='enable polygon type')
 parser.add_argument('--show_time', default=False, action='store_true', help='show processing time')
-parser.add_argument('--test_folder', default='/data/', type=str, help='folder path to input images')
+parser.add_argument('--test_folder', default='/home/data/ocr/detection/ICDAR2015/ch4_test_images',
+                    type=str, help='folder path to input images')
 
 args = parser.parse_args()
 
 
-""" For test images in a folder """
-image_list, _, _ = file_utils.get_files('/data/CRAFT-pytorch/test')
 
-result_folder = '/data/CRAFT-pytorch/result/'
-if not os.path.isdir(result_folder):
-    os.mkdir(result_folder)
+
+
+
+#result_folder = '/data/CRAFT-pytorch/result/'
+# if not os.path.isdir(args.result_folder):
+#     os.mkdir(args.result_folder)
+
+
 
 def test_net(net, image, text_threshold, link_threshold, low_text, cuda, poly):
     t0 = time.time()
@@ -110,7 +116,13 @@ def test_net(net, image, text_threshold, link_threshold, low_text, cuda, poly):
 
 
 
-def test(modelpara):
+def test(modelpara, result_folder):
+    if not os.path.isdir(result_folder):
+        os.mkdir(result_folder)
+
+    """ For test images in a folder """
+    image_list, _, _ = file_utils.get_files(args.test_folder)
+
     # load net
     net = CRAFT()     # initialize
 
@@ -134,11 +146,12 @@ def test(modelpara):
         print("Test image {:d}/{:d}: {:s}".format(k+1, len(image_list), image_path), end='\r')
         image = imgproc.loadImage(image_path)
 
-        bboxes, polys, score_text = test_net(net, image, args.text_threshold, args.link_threshold, args.low_text, args.cuda, args.poly)
+        bboxes, polys, score_text = test_net(net, image, args.text_threshold, args.link_threshold, args.low_text,
+                                             args.cuda, args.poly)
         # save score text
         filename, file_ext = os.path.splitext(os.path.basename(image_path))
         mask_file = result_folder + "/res_" + filename + '_mask.jpg'
-        #cv2.imwrite(mask_file, score_text)
+        cv2.imwrite(mask_file, score_text)
 
         file_utils.saveResult(image_path, image[:,:,::-1], polys, dirname=result_folder)
 

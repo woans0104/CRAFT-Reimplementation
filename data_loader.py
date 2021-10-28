@@ -106,12 +106,12 @@ def random_crop(imgs, img_size, character_bboxes):
         crop_w = sample_bboxes[1, 0] if tw < sample_bboxes[1, 0] - j else tw
     else:
         ### train for IC15 dataset####
-        # i = random.randint(0, h - th)
-        # j = random.randint(0, w - tw)
+        i = random.randint(0, h - th)
+        j = random.randint(0, w - tw)
 
         #### train for MLT dataset ###
-        i, j = 0, 0
-        crop_h, crop_w = h + 1, w + 1  # make the crop_h, crop_w > tw, th
+        # i, j = 0, 0
+        # crop_h, crop_w = h + 1, w + 1  # make the crop_h, crop_w > tw, th
 
     for idx in range(len(imgs)):
         # crop_h = sample_bboxes[1, 1] if th < sample_bboxes[1, 1] else th
@@ -185,6 +185,11 @@ class craft_base_dataset(data.Dataset):
         return (real_len - min(real_len, abs(real_len - pursedo_len))) / real_len
 
     def inference_pursedo_bboxes(self, net, image, word_bbox, word, viz=False):
+
+
+        if net.training:
+            net.eval()
+        print('inference_pursedo_bboxes mode :', net.training)
 
         word_image, MM = self.crop_image_by_bbox(image, word_bbox)
 

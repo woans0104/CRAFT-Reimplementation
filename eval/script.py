@@ -5,6 +5,7 @@ from eval import rrc_evaluation_funcs
 import importlib
 import zipfile
 import os
+import numpy as np
 def evaluation_imports():
     """
     evaluation_imports: Dictionary ( key = module name , value = alias  )  with python modules used in the evaluation. 
@@ -343,10 +344,13 @@ def eval_2015(res_folder):
     gtfile = os.path.join(current_folder, 'gt.zip')
     params['g'] = gtfile
     params['s'] = submitfile
-    rrc_evaluation_funcs.main_evaluation(params, default_evaluation_params, validate_data, evaluate_method)
+    resDict = rrc_evaluation_funcs.main_evaluation(params, default_evaluation_params, validate_data, evaluate_method)
 
+    return resDict
 
-def getresult():
+def getresult(res_folder):
     # rrc_evaluation_funcs.main_evaluation(None, default_evaluation_params, validate_data, evaluate_method)
     #eval_2015('../../test')
-    eval_2015('/data/CRAFT-pytorch/result')
+    resDict = eval_2015(res_folder)
+
+    return resDict
