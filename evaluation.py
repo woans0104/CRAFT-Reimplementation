@@ -4,8 +4,8 @@ import file_utils
 import os
 import imgproc
 import cv2
-from eval.icdar2015.script import eval_2015
-from eval.icdar2013.script import eval_2013
+from eval.script import eval_2015
+#from eval.icdar2013.script import eval_2013
 
 
 def eval2013(craft, test_folder, result_folder, text_threshold=0.7, link_threshold=0.4, low_text=0.4):
@@ -42,6 +42,7 @@ def eval2015(craft, test_folder, result_folder, text_threshold=0.7, link_thresho
         print("Test image {:d}/{:d}: {:s}".format(k + 1, len(image_list), image_path), end='\n')
         image = imgproc.loadImage(image_path)
 
+
         bboxes, polys, score_text = test_net(craft, image, text_threshold, link_threshold, low_text, True, False, 2240,
                                              1.5, False)
 
@@ -54,3 +55,14 @@ def eval2015(craft, test_folder, result_folder, text_threshold=0.7, link_thresho
 
     eval_2015(os.path.join(result_folder, 'gt'))
     print("elapsed time : {}s".format(time.time() - t))
+
+
+
+
+
+
+
+
+
+
+

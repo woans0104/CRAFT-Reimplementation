@@ -1,25 +1,27 @@
 
+import re
+import random
+import itertools
+import numpy as np
+import imgproc
 
-
-###for icdar2015####
-
-
+import cv2
+from PIL import Image
+import Polygon as plg
 
 import torch
 import torch.utils.data as data
 import scipy.io as scio
+import torchvision.transforms as transforms
+
+
 from gaussian import GaussianTransformer
 from watershed import watershed
-import re
-import itertools
-from file_utils import *
 from mep import mep
-import random
-from PIL import Image
-import torchvision.transforms as transforms
+
 import craft_utils
-import Polygon as plg
-import time
+from file_utils import *
+import config
 
 
 def ratio_area(h, w, box):
@@ -184,98 +186,134 @@ class craft_base_dataset(data.Dataset):
             return 0.
         return (real_len - min(real_len, abs(real_len - pursedo_len))) / real_len
 
-    def inference_pursedo_bboxes(self, net, image, word_bbox, word, viz=False):
+    def inference_pursedo_bboxes(self, net, image, word_bbox, word, viz=False, imagename=''):
 
 
+        #print('inference_pursedo_bboxes model last parameters :{}'.format(net.module.conv_cls[-1].weight.reshape(2, -1)))
         if net.training:
             net.eval()
-        print('inference_pursedo_bboxes mode :', net.training)
+        with torch.no_grad():
+            word_image, MM = self.crop_image_by_bbox(image, word_bbox)
 
-        word_image, MM = self.crop_image_by_bbox(image, word_bbox)
+            real_word_without_space = word.replace('\s', '')
+            real_char_nums = len(real_word_without_space)
+            input = word_image.copy()
+            scale = 64.0 / input.shape[0]
+            input = cv2.resize(input, None, fx=scale, fy=scale)
+            input_copy = input.copy()
 
-        real_word_without_space = word.replace('\s', '')
-        real_char_nums = len(real_word_without_space)
-        input = word_image.copy()
-        scale = 64.0 / input.shape[0]
-        input = cv2.resize(input, None, fx=scale, fy=scale)
 
-        img_torch = torch.from_numpy(imgproc.normalizeMeanVariance(input, mean=(0.485, 0.456, 0.406),
-                                                                   variance=(0.229, 0.224, 0.225)))
-        img_torch = img_torch.permute(2, 0, 1).unsqueeze(0)
-        img_torch = img_torch.type(torch.FloatTensor).cuda()
-        scores, _ = net(img_torch)
-        region_scores = scores[0, :, :, 0].cpu().data.numpy()
-        region_scores = np.uint8(np.clip(region_scores, 0, 1) * 255)
-        bgr_region_scores = cv2.resize(region_scores, (input.shape[1], input.shape[0]))
-        bgr_region_scores = cv2.cvtColor(bgr_region_scores, cv2.COLOR_GRAY2BGR)
-        pursedo_bboxes = watershed(input, bgr_region_scores, False)
 
-        _tmp = []
-        for i in range(pursedo_bboxes.shape[0]):
-            if np.mean(pursedo_bboxes[i].ravel()) > 2:
-                _tmp.append(pursedo_bboxes[i])
+            img_torch = torch.from_numpy(imgproc.normalizeMeanVariance(input, mean=(0.485, 0.456, 0.406),
+                                                                       variance=(0.229, 0.224, 0.225)))
+            img_torch = img_torch.permute(2, 0, 1).unsqueeze(0)
+            img_torch = img_torch.type(torch.FloatTensor).cuda()
+            scores, _ = net(img_torch)
+            region_scores = scores[0, :, :, 0].cpu().data.numpy()
+            region_scores = np.uint8(np.clip(region_scores, 0, 1) * 255)
+            bgr_region_scores = cv2.resize(region_scores, (input.shape[1], input.shape[0]))
+            bgr_region_scores = cv2.cvtColor(bgr_region_scores, cv2.COLOR_GRAY2BGR)
+
+
+
+            pursedo_bboxes, color_markers  = watershed(input, bgr_region_scores, False)
+
+            _tmp = []
+            # except for the small box
+            for i in range(pursedo_bboxes.shape[0]):
+                if np.mean(pursedo_bboxes[i].ravel()) > 2:
+                    _tmp.append(pursedo_bboxes[i])
+                else:
+                    print("filter bboxes", pursedo_bboxes[i])
+
+            pursedo_bboxes = np.array(_tmp, np.float32)
+            if pursedo_bboxes.shape[0] > 1:
+                index = np.argsort(pursedo_bboxes[:, 0, 0])
+                pursedo_bboxes = pursedo_bboxes[index]
+
+
+            #-----------------------------------------------------------------------------------------------#
+            input_copy2 = input_copy.copy()
+            _purs_bboxes = np.int32(pursedo_bboxes.copy())
+            _purs_bboxes[:, :, 0] = np.clip(_purs_bboxes[:, :, 0], 0, input.shape[1])
+            _purs_bboxes[:, :, 1] = np.clip(_purs_bboxes[:, :, 1], 0, input.shape[0])
+            for bbox in _purs_bboxes:
+                cv2.polylines(np.uint8(input_copy2), [np.reshape(bbox, (-1, 1, 2))], True, (255, 0, 0))
+
+            #-----------------------------------------------------------------------------------------------#
+
+
+            confidence = self.get_confidence(real_char_nums, len(pursedo_bboxes))
+
+            bboxes = []
+            if confidence <= 0.5:
+                width = input.shape[1]
+                height = input.shape[0]
+
+                width_per_char = width / len(word)
+                for i, char in enumerate(word):
+                    if char == ' ':
+                        continue
+                    left = i * width_per_char
+                    right = (i + 1) * width_per_char
+                    bbox = np.array([[left, 0], [right, 0], [right, height],
+                                     [left, height]])
+                    bboxes.append(bbox)
+
+                bboxes = np.array(bboxes, np.float32)
+                confidence = 0.5
+
             else:
-                print("filter bboxes", pursedo_bboxes[i])
-        pursedo_bboxes = np.array(_tmp, np.float32)
-        if pursedo_bboxes.shape[0] > 1:
-            index = np.argsort(pursedo_bboxes[:, 0, 0])
-            pursedo_bboxes = pursedo_bboxes[index]
+                bboxes = pursedo_bboxes
+            if viz == True:
 
-        confidence = self.get_confidence(real_char_nums, len(pursedo_bboxes))
+                input_copy1 = input_copy.copy()
+                _tmp_bboxes = np.int32(bboxes.copy())
+                _tmp_bboxes[:, :, 0] = np.clip(_tmp_bboxes[:, :, 0], 0, input.shape[1])
+                _tmp_bboxes[:, :, 1] = np.clip(_tmp_bboxes[:, :, 1], 0, input.shape[0])
+                for bbox in _tmp_bboxes:
+                    cv2.polylines(np.uint8(input_copy1), [np.reshape(bbox, (-1, 1, 2))], True, (255, 0, 0))
+                region_scores_color = cv2.applyColorMap(np.uint8(region_scores), cv2.COLORMAP_JET)
+                region_scores_color = cv2.resize(region_scores_color, (input.shape[1], input.shape[0]))
+                target = self.gaussianTransformer.generate_region(region_scores_color.shape, [_tmp_bboxes])
+                target_color = cv2.applyColorMap(target, cv2.COLORMAP_JET)
 
-        bboxes = []
-        if confidence <= 0.5:
-            width = input.shape[1]
-            height = input.shape[0]
+                # ori img , region score, watershed, box img
+                viz_image = np.hstack([input_copy[:, :, ::-1], region_scores_color,color_markers,
+                                       input_copy2[:, :, ::-1],input_copy1[:, :, ::-1]])
 
-            width_per_char = width / len(word)
-            for i, char in enumerate(word):
-                if char == ' ':
-                    continue
-                left = i * width_per_char
-                right = (i + 1) * width_per_char
-                bbox = np.array([[left, 0], [right, 0], [right, height],
-                                 [left, height]])
-                bboxes.append(bbox)
+                #viz_image = np.hstack([input_copy[:, :, ::-1],region_scores_color,color_markers])
 
-            bboxes = np.array(bboxes, np.float32)
-            confidence = 0.5
+                save_dir = os.path.join(config.RESULT_DIR,'sample_per_epoch')
+                if not os.path.exists(save_dir):
+                    os.mkdir(save_dir)
 
-        else:
-            bboxes = pursedo_bboxes
-        if False:
-            _tmp_bboxes = np.int32(bboxes.copy())
-            _tmp_bboxes[:, :, 0] = np.clip(_tmp_bboxes[:, :, 0], 0, input.shape[1])
-            _tmp_bboxes[:, :, 1] = np.clip(_tmp_bboxes[:, :, 1], 0, input.shape[0])
-            for bbox in _tmp_bboxes:
-                cv2.polylines(np.uint8(input), [np.reshape(bbox, (-1, 1, 2))], True, (255, 0, 0))
-            region_scores_color = cv2.applyColorMap(np.uint8(region_scores), cv2.COLORMAP_JET)
-            region_scores_color = cv2.resize(region_scores_color, (input.shape[1], input.shape[0]))
-            target = self.gaussianTransformer.generate_region(region_scores_color.shape, [_tmp_bboxes])
-            target_color = cv2.applyColorMap(target, cv2.COLORMAP_JET)
-            viz_image = np.hstack([input[:, :, ::-1], region_scores_color, target_color])
-            cv2.imshow("crop_image", viz_image)
-            cv2.waitKey()
-        bboxes /= scale
-        try:
-            for j in range(len(bboxes)):
-                ones = np.ones((4, 1))
-                tmp = np.concatenate([bboxes[j], ones], axis=-1)
-                I = np.matrix(MM).I
-                ori = np.matmul(I, tmp.transpose(1, 0)).transpose(1, 0)
-                bboxes[j] = ori[:, :2]
-        except Exception as e:
-            print(e, gt_path)
+                cv2.imwrite(save_dir+'/{}'.format(imagename), viz_image)
+                #import ipdb;ipdb.set_trace()
 
-#         for j in range(len(bboxes)):
-#             ones = np.ones((4, 1))
-#             tmp = np.concatenate([bboxes[j], ones], axis=-1)
-#             I = np.matrix(MM).I
-#             ori = np.matmul(I, tmp.transpose(1, 0)).transpose(1, 0)
-#             bboxes[j] = ori[:, :2]
+            bboxes /= scale
+            try:
+                for j in range(len(bboxes)):
+                    ones = np.ones((4, 1))
+                    tmp = np.concatenate([bboxes[j], ones], axis=-1)
+                    I = np.matrix(MM).I
+                    ori = np.matmul(I, tmp.transpose(1, 0)).transpose(1, 0)
+                    bboxes[j] = ori[:, :2]
+            except Exception as e:
+                print(e, gt_path)
 
-        bboxes[:, :, 1] = np.clip(bboxes[:, :, 1], 0., image.shape[0] - 1)
-        bboxes[:, :, 0] = np.clip(bboxes[:, :, 0], 0., image.shape[1] - 1)
+    #         for j in range(len(bboxes)):
+    #             ones = np.ones((4, 1))
+    #             tmp = np.concatenate([bboxes[j], ones], axis=-1)
+    #             I = np.matrix(MM).I
+    #             ori = np.matmul(I, tmp.transpose(1, 0)).transpose(1, 0)
+    #             bboxes[j] = ori[:, :2]
+
+            bboxes[:, :, 1] = np.clip(bboxes[:, :, 1], 0., image.shape[0] - 1)
+            bboxes[:, :, 0] = np.clip(bboxes[:, :, 0], 0., image.shape[1] - 1)
+
+        if not net.training:
+            net.train()
 
         return bboxes, region_scores, confidence
 
@@ -538,6 +576,9 @@ class ICDAR2013(craft_base_dataset):
 class ICDAR2015(craft_base_dataset):
     def __init__(self, net, icdar2015_folder, target_size=768, viz=False, debug=False):
         super(ICDAR2015, self).__init__(target_size, viz, debug)
+
+
+
         self.net = net
         self.net.eval()
         self.img_folder = os.path.join(icdar2015_folder, 'ch4_training_images')
@@ -546,6 +587,8 @@ class ICDAR2015(craft_base_dataset):
         self.images_path = []
         for imagename in imagenames:
             self.images_path.append(imagename)
+        self.epoch = 0
+        self.idx = self.make_idx_list([3,4,5,6,7,8,9,10])
 
     def __getitem__(self, index):
         return self.pull_item(index)
@@ -555,6 +598,33 @@ class ICDAR2015(craft_base_dataset):
 
     def get_imagename(self, index):
         return self.images_path[index]
+
+
+    def make_idx_list(self, idx):
+
+        len_box = []
+        for i in idx:
+            imagename = self.images_path[i]
+            gt_path = os.path.join(self.gt_folder, "gt_%s.txt" % os.path.splitext(imagename)[0])
+            word_bboxes, words = self.load_gt(gt_path)
+
+            count=0
+            for j in range(len(words)):
+                if words[j] == '###' or len(words[j].strip()) == 0:
+                    continue
+                count+=1
+            len_box.append(count)
+
+        new_list = []
+        for k in range(len(idx)):
+            for l in range(len_box[k]):
+                new_list.append(idx[k])
+        return new_list
+
+
+
+
+
 
     def load_image_gt_and_confidencemask(self, index):
         '''
@@ -578,6 +648,8 @@ class ICDAR2015(craft_base_dataset):
         character_bboxes = []
         new_words = []
         confidences = []
+        count = 0
+        new_imagename=''
         if len(word_bboxes) > 0:
             for i in range(len(word_bboxes)):
                 if words[i] == '###' or len(words[i].strip()) == 0:
@@ -585,10 +657,35 @@ class ICDAR2015(craft_base_dataset):
             for i in range(len(word_bboxes)):
                 if words[i] == '###' or len(words[i].strip()) == 0:
                     continue
+
+
+
+                pursedo_viz = False
+
+                # if len(self.idx) == 0:
+                #     self.idx = self.make_idx_list([3, 4, 5, 6, 7, 8, 9, 10])
+                #     self.epoch += 1
+                # else:
+                #     if index in self.idx:
+                #         #print('init : ',self.idx)
+                #         self.idx.remove(index)
+                #         #print('remove : ', self.idx)
+                #
+                #         pursedo_viz = True
+                #         count +=1
+                #
+                #         name,extension = os.path.splitext(imagename)
+                #         #new_imagename = '{}_{}_{}{}'.format(config.EPOCH,name,count,extension)
+                #         new_imagename = '{}_{}_{}{}'.format(self.epoch, name, count, extension)
+                #         print(new_imagename)
+
+
                 pursedo_bboxes, bbox_region_scores, confidence = self.inference_pursedo_bboxes(self.net, image,
                                                                                                word_bboxes[i],
                                                                                                words[i],
-                                                                                               viz=self.viz)
+                                                                                               viz=pursedo_viz,
+                                                                                               imagename=new_imagename)
+
                 confidences.append(confidence)
                 cv2.fillPoly(confidence_mask, [np.int32(word_bboxes[i])], (confidence))
                 new_words.append(words[i])

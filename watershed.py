@@ -150,12 +150,14 @@ def watershed(oriimage, image, viz=False):
     else:
         gray = image
     if viz:
-        cv2.imshow("gray", gray)
-        cv2.waitKey()
+        cv2.imwrite('exp/{}'.format('gray.jpg'), gray)
+        #cv2.imshow("gray", gray)
+        #cv2.waitKey()
     ret, binary = cv2.threshold(gray, 0.2 * np.max(gray), 255, cv2.THRESH_BINARY)
     if viz:
-        cv2.imshow("binary", binary)
-        cv2.waitKey()
+        cv2.imwrite('exp/{}'.format('binary.jpg'), binary)
+        # cv2.imshow("binary", binary)
+        # cv2.waitKey()
     # 形态学操作，进一步消除图像中噪点
     kernel = np.ones((3, 3), np.uint8)
     # kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
@@ -163,8 +165,9 @@ def watershed(oriimage, image, viz=False):
     sure_bg = cv2.dilate(mb, kernel, iterations=3)  # 3次膨胀,可以获取到大部分都是背景的区域
     sure_bg = mb
     if viz:
-        cv2.imshow("sure_bg", mb)
-        cv2.waitKey()
+        cv2.imwrite('exp/{}'.format('sure_bg.jpg'), mb)
+        # cv2.imshow("sure_bg", mb)
+        # cv2.waitKey()
     # 距离变换
     # dist = cv2.distanceTransform(mb, cv2.DIST_L2, 5)
     # if viz:
@@ -173,8 +176,9 @@ def watershed(oriimage, image, viz=False):
     ret, sure_fg = cv2.threshold(gray, 0.6 * gray.max(), 255, cv2.THRESH_BINARY)
     surface_fg = np.uint8(sure_fg)  # 保持色彩空间一致才能进行运算，现在是背景空间为整型空间，前景为浮点型空间，所以进行转换
     if viz:
-        cv2.imshow("surface_fg", surface_fg)
-        cv2.waitKey()
+        cv2.imwrite('exp/{}'.format('surface_fg.jpg'), surface_fg)
+        # cv2.imshow("surface_fg", surface_fg)
+        # cv2.waitKey()
     unknown = cv2.subtract(sure_bg, surface_fg)
     # 获取maskers,在markers中含有种子区域
     ret, markers = cv2.connectedComponents(surface_fg)
@@ -191,8 +195,9 @@ def watershed(oriimage, image, viz=False):
         color_markers = color_markers / (color_markers.max() / 255)
         color_markers = np.uint8(color_markers)
         color_markers = cv2.applyColorMap(color_markers, cv2.COLORMAP_JET)
-        cv2.imshow("color_markers", color_markers)
-        cv2.waitKey()
+        cv2.imwrite('exp/{}'.format('color_markers.jpg'), color_markers)
+        # cv2.imshow("color_markers", color_markers)
+        # cv2.waitKey()
     # a = cv2.applyColorMap(gray, cv2.COLORMAP_JET)
     markers = cv2.watershed(oriimage, markers=markers)
     oriimage[markers == -1] = [0, 0, 255]
@@ -202,12 +207,14 @@ def watershed(oriimage, image, viz=False):
         color_markers = color_markers / (color_markers.max() / 255)
         color_markers = np.uint8(color_markers)
         color_markers = cv2.applyColorMap(color_markers, cv2.COLORMAP_JET)
-        cv2.imshow("color_markers1", color_markers)
-        cv2.waitKey()
+        cv2.imwrite('exp/{}'.format('color_markers1.jpg'), color_markers)
+        # cv2.imshow("color_markers1", color_markers)
+        # cv2.waitKey()
 
     if viz:
-        cv2.imshow("image", oriimage)
-        cv2.waitKey()
+        cv2.imwrite('exp/{}'.format('image.jpg'), oriimage)
+        # cv2.imshow("image", oriimage)
+        # cv2.waitKey()
     for i in range(2, np.max(markers) + 1):
         np_contours = np.roll(np.array(np.where(markers == i)), 1, axis=0).transpose().reshape(-1, 2)
         # segmap = np.zeros(gray.shape, dtype=np.uint8)
@@ -238,10 +245,19 @@ def watershed(oriimage, image, viz=False):
             continue
         box = np.array(box)
         boxes.append(box)
-    return np.array(boxes)
+
+    #-------------------------------------------------------------------------#
+    color_markers = np.uint8(markers + 1)
+    color_markers = color_markers / (color_markers.max() / 255)
+    color_markers = np.uint8(color_markers)
+    color_markers = cv2.applyColorMap(color_markers, cv2.COLORMAP_JET)
+    # -------------------------------------------------------------------------#
+
+    return np.array(boxes), color_markers
 
 
 if __name__ == '__main__':
-    image = cv2.imread('images/standard.jpg', cv2.IMREAD_COLOR)
-    boxes = watershed(image, True)
-    print(boxes)
+    image = cv2.imread('exp/test1.jpg', cv2.IMREAD_COLOR)
+
+    boxes = watershed(image,image, True)
+    #print(boxes)

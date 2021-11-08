@@ -1,76 +1,79 @@
 import os
-import sys
-import torch
-import torch.utils.data as data
-import cv2
-import numpy as np
-import scipy.io as scio
-import argparse
 import time
-import torch.nn as nn
-import torch.nn.functional as F
+import math
+import random
+import argparse
+import numpy as np
+
+
+import torch
 import torch.backends.cudnn as cudnn
 import torch.optim as optim
-import random
-import h5py
-import re
-import water
+from torch.autograd import Variable
+
 from test import test
-
-
-from math import exp
 from data_loader import ICDAR2015, Synth80k, ICDAR2013
-
-###import file#######
-from augmentation import random_rot, crop_img_bboxes
-from gaussianmap import gaussion_transform, four_point_transform
-from generateheatmap import add_character, generate_target, add_affinity, generate_affinity, sort_box, real_affinity, generate_affinity_box
 from mseloss import Maploss
-
-
 
 from collections import OrderedDict
 from eval.script import getresult
-
-
-
-from PIL import Image
-from torchvision.transforms import transforms
+from file_utils import save_final_option, make_logger, AverageMeter
 from craft import CRAFT
-from torch.autograd import Variable
-from multiprocessing import Pool
 
 #3.2768e-5
 random.seed(42)
 
-# class SynAnnotationTransform(object):
-#     def __init__(self):
-#         pass
-#     def __call__(self, gt):
-#         image_name = gt['imnames'][0]
-parser = argparse.ArgumentParser(description='CRAFT reimplementation')
 
+parser = argparse.ArgumentParser(description='CRAFT re-backtime92')
 
-parser.add_argument('--resume', default=None, type=str,
-                    help='Checkpoint state_dict file to resume training from')
+parser.add_argument('--server', default='', type=str, help='server')
+
+parser.add_argument('--results_dir', default='/data/workspace/woans0104/CRAFT-re-backtime92/exp/weekly_back_2', type=str,
+                    help='Path to save checkpoints')
+
+parser.add_argument('--synth80k_path', default='/home/data/ocr/detection/SynthText/SynthText', type=str,
+                    help='Path to root directory of SynthText dataset')
+
 parser.add_argument('--batch_size', default=128, type = int,
                     help='batch size of training')
-#parser.add_argument('--cdua', default=True, type=str2bool,
-                    #help='Use CUDA to train model')
-parser.add_argument('--lr', '--learning-rate', default=3.2768e-5, type=float,
+
+parser.add_argument('--epoch', default=128, type = int,
+                    help='batch size of training')
+
+parser.add_argument('--lr', '--learning-rate', default=1e-4, type=float,
                     help='initial learning rate')
 parser.add_argument('--momentum', default=0.9, type=float,
                     help='Momentum value for optim')
-parser.add_argument('--weight_decay', default=5e-4, type=float,
+parser.add_argument('--weight_decay', default=0, type=float,
                     help='Weight decay for SGD')
-parser.add_argument('--gamma', default=0.1, type=float,
-                    help='Gamma update for SGD')
 parser.add_argument('--num_workers', default=32, type=int,
                     help='Number of workers used in dataloading')
 
 
+# for test
+def str2bool(v):
+    return v.lower() in ("yes", "y", "true", "t", "1")
+
+parser.add_argument('--test_dataset', default='icdar2015', type=str, help='test dataset')
+
+parser.add_argument('--text_threshold', default=0.7, type=float, help='text confidence threshold')
+parser.add_argument('--low_text', default=0.4, type=float, help='text low-bound score')
+parser.add_argument('--link_threshold', default=0.4, type=float, help='link confidence threshold')
+parser.add_argument('--cuda', default=True, type=str2bool, help='Use cuda to train model')
+parser.add_argument('--canvas_size', default=2240, type=int, help='image size for inference')
+parser.add_argument('--mag_ratio', default=2, type=float, help='image magnification ratio')
+parser.add_argument('--poly', default=False, action='store_true', help='enable polygon type')
+parser.add_argument('--show_time', default=False, action='store_true', help='show processing time')
+parser.add_argument('--test_folder', default='/home/data/ocr/detection/ICDAR2015/ch4_test_images',
+                    type=str, help='folder path to input images for test')
+parser.add_argument('--test_folder_gt', default='/home/data/ocr/detection/ICDAR2015/ch4_test_images',
+                    type=str, help='folder path to gt text for test')
+
 args = parser.parse_args()
 
+
+def str2bool(v):
+    return v.lower() in ("yes", "y", "true", "t", "1")
 
 def copyStateDict(state_dict):
     if list(state_dict.keys())[0].startswith("module"):
@@ -83,7 +86,7 @@ def copyStateDict(state_dict):
         new_state_dict[name] = v
     return new_state_dict
 
-def adjust_learning_rate(optimizer, gamma, step):
+def adjust_learning_rate(optimizer, step):
     """Sets the learning rate to the initial LR decayed by 10 at every
         specified step
     # Adapted from PyTorch Imagenet example:
@@ -95,90 +98,80 @@ def adjust_learning_rate(optimizer, gamma, step):
         param_group['lr'] = lr
 
 
+def parse_per_server_dataset(args):
+
+    if args.test_dataset == 'icdar2015':
+
+        if args.server == 'E_server':
+            args.synth80k_path = '/data/SynthText'
+            args.test_folder = '/data/ICDAR2015/ch4_test_images'
+            args.test_folder_gt = '/data/ICDAR2015/ch4_test_localization_transcription_gt'
+        elif args.server =='gnnet':
+            args.synth80k_path = '/home/data/ocr/detection/SynthText/SynthText'
+            args.test_folder = '/home/data/ocr/detection/ICDAR2015/ch4_test_images'
+            args.test_folder_gt = '/home/data/ocr/detection/ICDAR2015/ch4_test_localization_transcription_gt'
+
+    elif args.test_dataset == 'icdar2013':
+
+        if args.server == 'E_server':
+            args.synth80k_path = '/data/SynthText'
+            args.test_folder = '/data/ICDAR2013/Challenge2_Test_Task12_Images'
+            args.test_folder_gt = '/data/ICDAR2013/Challenge2_Test_Task1_GT'
+        elif args.server == 'gnnet':
+            args.synth80k_path = '/home/data/ocr/detection/SynthText/SynthText'
+            args.test_folder = '/home/data/ocr/detection/ICDAR2013/Challenge2_Test_Task12_Images'
+            args.test_folder_gt = '/home/data/ocr/detection/ICDAR2013/Challenge2_Test_Task1_GT'
+    else:
+        raise Exception("error not a supported server")
+
 if __name__ == '__main__':
 
-    # gaussian = gaussion_transform()
-    # box = scio.loadmat('/data/CRAFT-pytorch/syntext/SynthText/gt.mat')
-    # bbox = box['wordBB'][0][0][0]
-    # charbox = box['charBB'][0]
-    # imgname = box['imnames'][0]
-    # imgtxt = box['txt'][0]
+    if not os.path.exists(args.results_dir):
+        os.mkdir(args.results_dir)
 
-    #dataloader = syndata(imgname, charbox, imgtxt)
-    dataloader = Synth80k('/data/CRAFT-pytorch/syntext/SynthText/SynthText', target_size = 768)
+    parse_per_server_dataset(args)
+
+    dataloader = Synth80k(args.synth80k_path, target_size = 768)
     train_loader = torch.utils.data.DataLoader(
         dataloader,
-        batch_size=16,
+        batch_size=args.batch_size,
         shuffle=True,
         num_workers=0,
         drop_last=True,
         pin_memory=True)
-    #batch_syn = iter(train_loader)
-    # prefetcher = data_prefetcher(dataloader)
-    # input, target1, target2 = prefetcher.next()
-    #print(input.size())
-    net = CRAFT()
-    #net.load_state_dict(copyStateDict(torch.load('/data/CRAFT-pytorch/CRAFT_net_050000.pth')))
-    #net.load_state_dict(copyStateDict(torch.load('/data/CRAFT-pytorch/1-7.pth')))
-    #net.load_state_dict(copyStateDict(torch.load('/data/CRAFT-pytorch/craft_mlt_25k.pth')))
-    #net.load_state_dict(copyStateDict(torch.load('vgg16_bn-6c64b313.pth')))
-    #realdata = realdata(net)
-    # realdata = ICDAR2015(net, '/data/CRAFT-pytorch/icdar2015', target_size = 768)
-    # real_data_loader = torch.utils.data.DataLoader(
-    #     realdata,
-    #     batch_size=10,
-    #     shuffle=True,
-    #     num_workers=0,
-    #     drop_last=True,
-    #     pin_memory=True)
-    net = net.cuda()
-    #net = CRAFT_net
 
-    # if args.cdua:
-    net = torch.nn.DataParallel(net,device_ids=[0,1,2,3]).cuda()
+
+    net = CRAFT(pretrained=True)
+    net = torch.nn.DataParallel(net).cuda()
     cudnn.benchmark = True
-    # realdata = ICDAR2015(net, '/data/CRAFT-pytorch/icdar2015', target_size=768)
-    # real_data_loader = torch.utils.data.DataLoader(
-    #     realdata,
-    #     batch_size=10,
-    #     shuffle=True,
-    #     num_workers=0,
-    #     drop_last=True,
-    #     pin_memory=True)
 
 
     optimizer = optim.Adam(net.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     criterion = Maploss()
-    #criterion = torch.nn.MSELoss(reduce=True, size_average=True)
+
+    #logger
+    trn_logger, val_logger = make_logger(path=args.results_dir)
+
+    #save args
+    save_final_option(args)
+
     net.train()
 
 
-    step_index = 0
-
-
+    step_index = 1
     loss_time = 0
     loss_value = 0
     compare_loss = 1
-    for epoch in range(1000):
+    for epoch in range(args.epoch):
         loss_value = 0
-        # if epoch % 50 == 0 and epoch != 0:
-        #     step_index += 1
-        #     adjust_learning_rate(optimizer, args.gamma, step_index)
 
         st = time.time()
+        losses = AverageMeter()
+
         for index, (images, gh_label, gah_label, mask, _) in enumerate(train_loader):
             if index % 20000 == 0 and index != 0:
                 step_index += 1
-                adjust_learning_rate(optimizer, args.gamma, step_index)
-            #real_images, real_gh_label, real_gah_label, real_mask = next(batch_real)
-
-            # syn_images, syn_gh_label, syn_gah_label, syn_mask = next(batch_syn)
-            # images = torch.cat((syn_images,real_images), 0)
-            # gh_label = torch.cat((syn_gh_label, real_gh_label), 0)
-            # gah_label = torch.cat((syn_gah_label, real_gah_label), 0)
-            # mask = torch.cat((syn_mask, real_mask), 0)
-
-            #affinity_mask = torch.cat((syn_mask, real_affinity_mask), 0)
+                adjust_learning_rate(optimizer, step_index)
 
 
             images = Variable(images.type(torch.FloatTensor)).cuda()
@@ -201,28 +194,42 @@ if __name__ == '__main__':
 
             loss.backward()
             optimizer.step()
+            losses.update(loss.item(), 1)
             loss_value += loss.item()
+
+            if loss > 1e8 or math.isnan(loss):
+                raise Exception("Loss exploded")
+
+
+
             if index % 2 == 0 and index > 0:
                 et = time.time()
-                print('epoch {}:({}/{}) batch || training time for 2 batch {} || training loss {} ||'.format(epoch, index, len(train_loader), et-st, loss_value/2))
+                print('epoch {}:({}/{}) batch || training time for 2 batch {} || training loss {} ||'
+                      .format(epoch, index, len(train_loader), et-st, loss_value/2))
                 loss_time = 0
                 loss_value = 0
                 st = time.time()
-            # if loss < compare_loss:
-            #     print('save the lower loss iter, loss:',loss)
-            #     compare_loss = loss
-            #     torch.save(net.module.state_dict(),
-            #                '/data/CRAFT-pytorch/real_weights/lower_loss.pth'
 
-            if index % 5000 == 0 and index != 0:
+
+
+            if index % 1000 == 0 and index != 0:
                 print('Saving state, index:', index)
-                torch.save(net.module.state_dict(),
-                           '/data/CRAFT-pytorch/synweights/synweights_' + repr(index) + '.pth')
-                test('/data/CRAFT-pytorch/synweights/synweights_' + repr(index) + '.pth')
-                #test('/data/CRAFT-pytorch/craft_mlt_25k.pth')
-                getresult()
+                torch.save({
+                    'iter': index,
+                    'craft': net.module.state_dict(),
+                    'optimizer': optimizer.state_dict()
+                }, args.results_dir + '/CRAFT_clr_' + repr(index) + '.pth')
 
 
+
+                txt_result_path = os.path.join(args.results_dir, 'res_txt')
+                test(args, net, txt_result_path)
+
+                try:
+                    resdict = getresult(txt_result_path)
+                    val_logger.write([index, losses.avg, np.round(resdict['method']['hmean'], 3)])
+                except:
+                    val_logger.write([index, losses.avg, str(0)])
 
 
 
